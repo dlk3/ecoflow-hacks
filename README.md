@@ -2,7 +2,7 @@
 
 ### Log selected Delta Pro metrics into a MariaDB database and control AC vs solar battery charging
 
-* **ecoflow-logging** Python script that uses:
+* **ecoflow-logger** Python script that uses:
   * **ecoflow.py** EcoFlow API module adapted from the [vwt12eh8/hassio-ecoflow GitHub project](https://github.com/vwt12eh8/hassio-ecoflow)
   * **smartthings.py** SmartThings API module
   * **ecoflow-logger.timer** Systemd timer that triggers ecoflow-logger.service once a minute
