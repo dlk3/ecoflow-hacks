@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+
+#  SmartThings API token is required, see https://account.smartthings.com/tokens
+#  to get one
+SMARTTHINGS_API_TOKEN = ""
+DEVICE_LABEL="EcoFlow"
+
+import smartthings
+
+import logging
+log_datefmt = '%d-%b-%y %H:%M:%S'
+logging.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s', datefmt=log_datefmt, level=logging.DEBUG)
+
+device = smartthings.Thing(DEVICE_LABEL, SMARTTHINGS_API_TOKEN)
+
+device.onoff('on')

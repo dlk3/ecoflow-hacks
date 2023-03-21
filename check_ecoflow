@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+
+from optparse import OptionParser
+import MySQLdb
+import datetime
+import logging
+log_datefmt = '%d-%b-%y %H:%M:%S'
+logging.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s', datefmt=log_datefmt, level=logging.WARNING)
+
+
+def connectDB(dbhost, dbuser, dbpass, dbname):
+    try:
+        conn = MySQLdb.connect(host=dbhost, user=dbuser, passwd=dbpass, db=dbname)
+        logging.debug('connectDB() successfully connected to the "{}" database'.format(opts.dbname))
+        return conn 
+    except Exception as e:
+        logging.exception('Unexpected exception in connectDB() while connecting to the database', exc_info=True)
+        exit(3)
+
+def getDBRecord():
+    #  Create a database cursor
+    cursor = conn.cursor(MySQLdb.cursors.DictCursor)
+
+    #  Get the most recent record
+    sql = 'SELECT * FROM `{}`.`{}` ORDER BY `timestamp` DESC LIMIT 1'.format(opts.dbname, opts.dbtable)
+    try:
+        logging.debug('getDBRecord() sql query: {}'.format(sql))
+        cursor.execute(sql)
+        record = cursor.fetchone()
+    except:
+        logging.exception('Unexpected exception in getDBRecord() executing SQL:\n{}'.format(sql), exc_info=True)
+        exit(3)
+
+    #  Done with the cursor
+    cursor.close()
+
+    logging.debug('getDBRecord() returning: {}'.format(record))
+    return record
+
+if __name__ == '__main__':
+    cmdline = OptionParser(usage="%prog [options]")
+    cmdline.add_option('-H', '--databasehost', action='store', dest='dbhost', help='Host name or IP address for the database server that contains the EcoFlow device database.')
+    cmdline.add_option('-u', '--userid', action='store', dest='dbuser', help='Username used to login to the database server that contains the EcoFlow device database.  This user should have read-only access to the database.')
+    cmdline.add_option('-p', '--password', action='store', dest='dbpass', help='Password used to login to the database server that contains the EcoFlow device database.')
+    cmdline.add_option('-d', '--databasename', action='store', dest='dbname', help='Name of the database that contains the EcoFlow device data.')
+    cmdline.add_option('-t', '--tablename', action='store', dest='dbtable', help='Name for the database table that contains the EcoFlow device data.')
+    cmdline.add_option('-v', '--verbose', action='store', dest='verbose', default=0, help='Specify the level of detail provided by the plugin:\n\t0 = normal plugin status and performance output (the default,) \n\t3 = show lots of detail for debugging purposes, including the database password.')
+    opts, args = cmdline.parse_args()
+    if opts.verbose == '3':
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+    if not opts.dbhost:
+        print('--databasehost option must be specified')
+        exit(4)
+    logging.debug('opts.dbhost: {}'.format(opts.dbhost))
+    if not opts.dbuser:
+        print('--userid option must be specified')
+        exit(4)
+    logging.debug('opts.dbuser: {}'.format(opts.dbuser))
+    if not opts.dbpass:
+        print('--password option must be specified')
+        exit(4)
+    logging.debug('opts.dbpass: {}'.format(opts.dbpass))
+    if not opts.dbname:
+        print('--databasename option must be specified')
+        exit(4)
+    logging.debug('opts.dbname: {}'.format(opts.dbname))
+    if not opts.dbtable:
+        print('--tablename option must be specified')
+        exit(4)
+    logging.debug('opts.dbtable: {}'.format(opts.dbtable))
+
+    #  Connect to the database
+    conn = connectDB(opts.dbhost, opts.dbuser, opts.dbpass, opts.dbname)
+    
+    #  Get the most recent record
+    status = getDBRecord()
+
+    #  Disconnect from the database
+    conn.close()
+
+    #  Check the age of the record
+    logging.debug('timestamp: {}'.format(datetime.datetime.fromtimestamp(status['timestamp']).strftime('%Y-%m-%d %H:%M:%S')))
+    dif = datetime.datetime.now() - datetime.datetime.fromtimestamp(status['timestamp'])
+    minutes = dif.seconds / 60
+    logging.debug('age of timestamp: {} minutes'.format(minutes))
+    if minutes > 2:
+        print('WARNING: EcoFlow device has not reported ststus for {0:.2g} minutes'.format(minutes))
+        exit(2)
+
+    #  Normal response
+    logging.debug('Performance data: BATTERY_LEVEL: {}, BATTERY_TEMP: {}'.format(float(status['BATTERY_LEVEL']), float(status['BATTERY_TEMP'])))
+    perf = 'BAT%: {}, BATTEMP: {}C'.format(round(float(status['BATTERY_LEVEL'])), round(float(status['BATTERY_TEMP'])))
+    print('OK: Ecoflow device reported status {:.2g} minutes ago|{}'.format(minutes, perf))
+    exit(0)

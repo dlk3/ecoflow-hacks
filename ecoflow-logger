@@ -1,0 +1,303 @@
+#!/usr/bin/env python
+
+#  Copyright (C) 2023  David King <dave@daveking.com>
+#
+#  This Source Code Form is subject to the terms of the Mozilla Public License,
+#  v. 2.0.  If a copy of the MPL was not distbuted with this file, You can
+#  obtain one at https://mozilla.org/MPL/2.0/.
+
+#  Collect status information from EcoFlow device and put it into a mariaDB table
+#  for use in a Graphana dasnboard.  
+
+#  Run once a minute by a systemd timer.
+
+#  Also includes option to turn on/off a SmartThings switch to control the AC
+#  input into the EcoFlow device.  Will try to turn on SmartThings switch if
+#  the battery charge drops down to 5%.
+
+cfg = {
+	"dbhost": "localhost",
+	"dbname": "ecoflow",
+	"dbuser": "ecoflow",
+	"dbpass": "C[Qu(ynUs72CLLi_",
+	"dbtable": "stats",
+	"dbcolumns": [
+		{
+			'name': 'timestamp',
+			'definition': 'BIGINT'
+		}, 
+		{
+			'name': 'AC_IN_WATTS',
+			'definition': 'DECIMAL(7,3)'
+		},
+		{
+			'name': 'AC_IN_VOLTS',
+			'definition': 'DECIMAL(6,3)'
+		},
+		{
+			'name': 'AC_IN_HERTZ',
+			'definition': 'DECIMAL(5,2)'
+		},
+		{
+			'name': 'AC_OUT_WATTS',
+			'definition': 'DECIMAL(7,3)'
+		},
+		{
+			'name': 'AC_OUT_VOLTS',
+			'definition': 'DECIMAL(6,3)'
+		},
+		{
+			'name': 'AC_OUT_HERTZ',
+			'definition': 'DECIMAL(5,2)'
+		},
+		{
+			'name': 'SOLAR_IN_WATTS',
+			'definition': 'DECIMAL(7,3)'
+		},
+		{
+			'name': 'SOLAR_IN_VOLTS',
+			'definition': 'DECIMAL(6,3)'
+		},
+		{
+			'name': 'TOTAL_IN_WATTS',
+			'definition': 'DECIMAL(7,3)'
+		},
+		{
+			'name': 'TOTAL_OUT_WATTS',
+			'definition': 'DECIMAL(6,3)'
+		},
+		{
+			'name': 'BATTERY_LEVEL',
+			'definition': 'DECIMAL(3)'
+		},
+		{
+			'name': 'BATTERY_TEMP',
+			'definition': 'DECIMAL(3)'
+		},
+		{
+			'name': 'MINUTES_REMAINING',
+			'definition': 'DECIMAL(15)'
+		},
+		{
+			'name': 'MINUTES_TO_CHARGE',
+			'definition': 'DECIMAL(15)'
+		},
+	],
+	'ecoflow_device': {
+		'ip_address': '192.168.1.4',
+		'product_name': 'DELTA Pro',
+		'smartswitch_name': 'Ecoflow',
+		'smartthings_token': ''
+	}
+}
+
+from optparse import OptionParser
+import json
+import MySQLdb
+import os
+import datetime
+import time
+import re
+import requests
+import ecoflow
+import smartthings
+
+import logging
+log_datefmt = '%d-%b-%y %H:%M:%S'
+logging.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s', datefmt=log_datefmt, level=logging.WARNING)
+
+#  Connect to the database 
+def connectDB(cfg):
+	try:
+		conn = MySQLdb.connect(host = cfg['dbhost'], user = cfg['dbuser'], passwd = cfg['dbpass'], db = cfg['dbname'])
+		return conn 
+	except Exception as e:
+		logging.exception('Unexpected exception while connecting to the database', exc_info=True)
+		exit(1)
+
+#  Drop the table if we are asked to do so
+def dropTable(conn, dbtable, quiet):
+	try:
+		logging.debug('Dropping the {dbtable} table')
+		cursor = conn.cursor()
+		cursor.execute('DROP TABLE IF EXISTS `{}`'.format(dbtable))
+		cursor.close()
+	except Exception as e:
+		logging.exception('Unexpected exception while dropping the "{}"database table'.format(dbtable), exc_info=True)
+		exit(1)
+
+#  Check to see if the table exists and create it if it doesn't
+def createTable(conn, dbname, dbtable, dbcolumns):           
+	try:
+		#  Check if table exists
+		created = False
+		sql = 'SELECT table_name FROM information_schema.tables WHERE table_schema = \'{}\' AND table_name = \'{}\''.format(dbname, dbtable)
+		cursor = conn.cursor()
+		cursor.execute(sql)
+		results = cursor.fetchall()
+		if len(results) == 0:
+			#  Create the table
+			logging.debug("{} table does not exist, creating it".format(dbtable))
+			sql = "CREATE TABLE `{}`.`{}` (".format(dbname, dbtable)
+			index_def = ''
+			engine_def = ' ENGINE = InnoDB;'
+			for column in dbcolumns:
+				sql += ' `{}` {},'.format(column['name'], column['definition'])
+				if 'key' in column and column['key']:
+					index_def = ' UNIQUE `uniqueindex` (`{}`)'.format(column['name'])
+			if index_def != '':
+				sql += index_def + ')'
+			else:
+				sql = sql.rstrip(',') + ')'
+			sql += engine_def
+			cursor.execute(sql)
+			created = True
+		cursor.close()
+		return created
+	except Exception as e:
+		logging.exception('Unexpected exception while creating the "{}" database table.\nsql = "{}"'.format(dbtable, sql), exc_info=True)
+		exit(1)
+
+def getStatus(conn, table_name, ip_address, product_name, smartswitch_name, smartthings_token, timeout=30):
+	
+	timestamp = int(datetime.datetime.now().timestamp())
+	ac_in_watts = None
+	ac_in_volts = None
+	ac_in_hertz = None
+	ac_out_watts = None
+	ac_out_volts = None
+	ac_out_hertz = None
+	solar_in_watts = None
+	solar_in_volts = None
+	total_in_watts = None
+	total_out_watts = None
+	battery_level = None
+	battery_temp = None
+	minutes_remaining = None
+	minutes_to_charge = None
+
+	status = ecoflow.get_status(product_name, ip_address, timeout)
+	if status:
+		logging.debug(json.dumps(status, indent=4))
+		try:
+			if 'inverter' in status:
+				if'ac_in_power' in status['inverter']:
+					ac_in_watts = status['inverter']['ac_in_power']
+				if 'ac_in_voltage' in status['inverter']:
+					ac_in_volts = status['inverter']['ac_in_voltage']
+				if 'ac_in_freq' in status['inverter']:
+					ac_in_hertz = status['inverter']['ac_in_freq']
+				if 'ac_out_power' in status['inverter']:
+					ac_out_watts = status['inverter']['ac_out_power']
+				if 'ac_out_voltage' in status['inverter']:
+					ac_out_volts = status['inverter']['ac_out_voltage']
+				if 'ac_out_freq' in status['inverter']:
+					ac_out_hertz = status['inverter']['ac_out_freq']
+			logging.debug('ac_in_watts: {}'.format(ac_in_watts))
+			logging.debug('ac_in_volts: {}'.format(ac_in_volts))
+			logging.debug('ac_in_hertz: {}'.format(ac_in_hertz))
+			logging.debug('ac_out_watts: {}'.format(ac_out_watts))
+			logging.debug('ac_out_volts: {}'.format(ac_out_volts))
+			logging.debug('ac_out_hertz: {}'.format(ac_out_hertz))
+			if 'mppt' in status:
+				if'dc_in_power' in status['mppt']:
+					solar_in_watts = status['mppt']['dc_in_power']
+				if 'dc_in_voltage' in status['mppt']:
+					solar_in_volts = status['mppt']['dc_in_voltage']
+			logging.debug('solar_in_watts: {}'.format(solar_in_watts))
+			logging.debug('solar_in_volts: {}'.format(solar_in_volts))
+			if 'pd' in status:
+				if 'in_power' in status['pd']:
+					total_in_watts = status['pd']['in_power']
+				if 'out_power' in status['pd']:
+					total_out_watts = status['pd']['out_power']
+			logging.debug('total_in_watts: {}'.format(total_in_watts))
+			logging.debug('total_out_watts: {}'.format(total_out_watts))
+			if 'bms' in status:
+				if 'battery_level_f32' in status['bms'][0]:
+					battery_level = status['bms'][0]['battery_level_f32']
+				if 'battery_temp' in status['bms'][0]:
+					battery_temp = status['bms'][0]['battery_temp']
+			logging.debug('battery_level: {}'.format(battery_level))
+			logging.debug('battery_temp: {}'.format(battery_temp))
+			if 'bms' in status and 'inverter' in status:
+				# Rated watts per hour * current battery percentage / current output watts (out volts * out_amps) = hours remaining * 60 = minutes remaining
+				minutes_remaining = 36 * status['bms'][0]['battery_level_f32'] / status['inverter']['ac_out_voltage'] / status['inverter']['ac_out_current'] * 60
+			logging.debug('minutes_remaining: {}'.format(minutes_remaining))
+			if 'ems' in status:
+				if 'battery_remain_charge' in status['ems']:
+					if ' days, ' in status['ems']['battery_remain_charge']:
+						m = re.search(r'(\d+) days, (\d+):(\d+):(\d+)', status['ems']['battery_remain_charge'])
+						if m and m.lastindex == 4:
+							if int(m.group(1)) < 99:
+								minutes_to_charge = (int(m.group(1)) * 24 * 60 ) + (int(m.group(2)) * 60) + int(m.group(3))
+						else:
+							logging.warning('Unable to parse ems[battery_remain_charge]: "{}"'.format(status['ems']['battery_remain_charge']))
+					else:	
+						m = re.search(r'(\d+):(\d+):(\d+)', status['ems']['battery_remain_charge'])
+						if m and m.lastindex == 3:
+							minutes_to_charge = (int(m.group(1)) * 60) + int(m.group(2))
+						else:
+							logging.warning('Unable to parse ems[battery_remain_charge]: "{}"'.format(status['ems']['battery_remain_charge']))
+					logging.debug('battery_remain_charge: {}, minutes_to_charge: {}'.format(status['ems']['battery_remain_charge'], minutes_to_charge))
+			
+			#  If battery level drops below 5% and AC power is off, turn it on.
+			if ac_in_watts == 0 and battery_level > 0 and battery_level < 5:
+				logging.warning('ac_in_watts is 0 and battery_level is less than 5%, will try to turn on AC power.')
+				device = smartthings.Thing(smartswitch_name, smartthings_token)
+				device.onoff(opts.ac)
+		except:
+			logging.exception('Unexpected exception while preparing metrics for database insert\n{}'.format(json.dumps(status, indent=4)), exc_info=True)
+			exit(1)
+			
+		#  Create a database cursor
+		cursor = conn.cursor()
+
+		try:
+			sql = 'INSERT INTO `{}` (`timestamp`, `AC_IN_WATTS`, `AC_IN_VOLTS`, `AC_IN_HERTZ`, `AC_OUT_WATTS`, `AC_OUT_VOLTS`, `AC_OUT_HERTZ`, `SOLAR_IN_WATTS`, `SOLAR_IN_VOLTS`, `TOTAL_IN_WATTS`, `TOTAL_OUT_WATTS`, `BATTERY_LEVEL`, `BATTERY_TEMP`, `MINUTES_REMAINING`, `MINUTES_TO_CHARGE`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})'.format(table_name, timestamp, ac_in_watts, ac_in_volts, ac_in_hertz, ac_out_watts, ac_out_volts, ac_out_hertz, solar_in_watts, solar_in_volts, total_in_watts, total_out_watts, battery_level, battery_temp, minutes_remaining, minutes_to_charge)
+			sql = sql.replace('None', 'NULL')
+			logging.debug(sql)
+			cursor.execute(sql)
+		except:
+			logging.exception('Unexpected exception executing SQL:\n{}'.format(sql), exc_info=True)
+			exit(1)
+
+		#  Commit the changes
+		conn.commit()
+		
+		#  Done with the cursor
+		cursor.close()
+	else:
+		logging.warning('No status data returned')
+
+if __name__ == '__main__':
+	
+	#  Handle command line options
+	cmdline = OptionParser(usage="%prog [options]")
+	cmdline.add_option('-a', '--ac', action='store', dest='ac', choices=('on', 'off'), help='Turn the smart switch that feeds AC to the device "off" or "on"')
+	cmdline.add_option('-d', '--debug', action='store_true', dest='debug', default=False, help='Drop the table and recreate it')
+	cmdline.add_option('-e', '--erase', action='store_true', dest='drop', default=False, help='Drop the table and recreate it')
+	opts, args = cmdline.parse_args()
+	if opts.debug:
+		logger = logging.getLogger()
+		logger.setLevel(logging.DEBUG)
+
+	#  Connect to the database
+	conn = connectDB(cfg)
+        
+	#  Drop the table if we were asked to do so
+	if opts.drop:
+		dropTable(conn, cfg['dbtable'], opts.quiet)
+                
+	#  Create the table, if it doesn't already exist
+	created = createTable(conn, cfg['dbname'], cfg['dbtable'], cfg['dbcolumns'])
+
+	device = cfg['ecoflow_device']
+	getStatus(conn, cfg['dbtable'], device['ip_address'], device['product_name'], device['smartswitch_name'], device['smartthings_token'])
+	if opts.ac != None:
+		logging.debug('Turning "{}" smart switch {}'.format(device['smartswitch_name'], opts.ac))
+		device = smartthings.Thing(device['smartswitch_name'], device['smartthings_token'])
+		device.onoff(opts.ac)
+
+	#  Disconnect from the database
+	conn.close()
