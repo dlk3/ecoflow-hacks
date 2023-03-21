@@ -1,0 +1,8 @@
+[Unit]
+Description=logging EcoFlow status to a database
+OnFailure=send-email-on-error@%n.service
+
+[Service]
+Type=oneshot
+User=dlk
+ExecStart=/opt/ecoflow/ecoflow-python/bin/python /opt/ecoflow/ecoflow-logger

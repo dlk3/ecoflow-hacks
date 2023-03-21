@@ -1,0 +1,13 @@
+[Unit]
+Description=logging status EcoFlow statusto a database
+Requires=mariadb.service
+After=mariadb.service
+
+[Timer]
+OnCalendar=minutely
+Persistent=true
+AccuracySec=60 seconds
+
+[Install]
+WantedBy=timers.target
+
