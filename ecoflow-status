@@ -3,5 +3,9 @@
 import ecoflow
 import json
 
+#  Get a JSON array of system information
 print(json.dumps(ecoflow.get_status('DELTA Pro', '192.168.1.4', 15), indent=4))
 
+#  Send command to set maximum battery charge level to 95%
+product_number = int(list(ecoflow.PRODUCTS.keys())[list(ecoflow.PRODUCTS.values()).index('DELTA Pro')])
+ecoflow.set_config('DELTA Pro', '192.168.1.4', 15, ecoflow.set_level_max(product_number, 95))

@@ -25,7 +25,8 @@
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 #
 #  https://github.com/vwt12eh8/hassio-ecoflow
-#  Combined the contents of __init__.py, receive.py and rxtcp.py into one file.
+#  Combined the contents of __init__.py, receive.py, send.py, and rxtcp.py into
+#  one file.
 	
 from typing import Any, Callable, Iterable, Optional, TypeVar, TypedDict, cast
 import datetime
@@ -57,6 +58,8 @@ _crc8_tab = [0, 7, 14, 9, 28, 27, 18, 21, 56, 63, 54, 49, 36, 35, 42, 45, 112, 1
 			 122, 137, 142, 135, 128, 149, 146, 155, 156, 177, 182, 191, 184, 173, 170, 163, 164, 249, 254, 247, 240, 229, 226, 235, 236, 193, 198, 207, 200, 221, 218, 211, 212, 105, 110, 103, 96, 117, 114, 123, 124, 81, 86, 95, 88, 77, 74, 67, 68, 25, 30, 23, 16, 5, 2, 11, 12, 33, 38, 47, 40, 61, 58, 51, 52, 78, 73, 64, 71, 82, 85, 92, 91, 118, 113, 120, 127, 106, 109, 100, 99, 62, 57, 48, 55, 34, 37, 44, 43, 6, 1, 8, 15, 26, 29, 20, 19, 174, 169, 160, 167, 178, 181, 188, 187, 150, 145, 152, 159, 138, 141, 132, 131, 222, 217, 208, 215, 194, 197, 204, 203, 230, 225, 232, 239, 250, 253, 244, 243]
 _crc16_tab = [0, 49345, 49537, 320, 49921, 960, 640, 49729, 50689, 1728, 1920, 51009, 1280, 50625, 50305, 1088, 52225, 3264, 3456, 52545, 3840, 53185, 52865, 3648, 2560, 51905, 52097, 2880, 51457, 2496, 2176, 51265, 55297, 6336, 6528, 55617, 6912, 56257, 55937, 6720, 7680, 57025, 57217, 8000, 56577, 7616, 7296, 56385, 5120, 54465, 54657, 5440, 55041, 6080, 5760, 54849, 53761, 4800, 4992, 54081, 4352, 53697, 53377, 4160, 61441, 12480, 12672, 61761, 13056, 62401, 62081, 12864, 13824, 63169, 63361, 14144, 62721, 13760, 13440, 62529, 15360, 64705, 64897, 15680, 65281, 16320, 16000, 65089, 64001, 15040, 15232, 64321, 14592, 63937, 63617, 14400, 10240, 59585, 59777, 10560, 60161, 11200, 10880, 59969, 60929, 11968, 12160, 61249, 11520, 60865, 60545, 11328, 58369, 9408, 9600, 58689, 9984, 59329, 59009, 9792, 8704, 58049, 58241, 9024, 57601, 8640, 8320, 57409, 40961, 24768,
 			  24960, 41281, 25344, 41921, 41601, 25152, 26112, 42689, 42881, 26432, 42241, 26048, 25728, 42049, 27648, 44225, 44417, 27968, 44801, 28608, 28288, 44609, 43521, 27328, 27520, 43841, 26880, 43457, 43137, 26688, 30720, 47297, 47489, 31040, 47873, 31680, 31360, 47681, 48641, 32448, 32640, 48961, 32000, 48577, 48257, 31808, 46081, 29888, 30080, 46401, 30464, 47041, 46721, 30272, 29184, 45761, 45953, 29504, 45313, 29120, 28800, 45121, 20480, 37057, 37249, 20800, 37633, 21440, 21120, 37441, 38401, 22208, 22400, 38721, 21760, 38337, 38017, 21568, 39937, 23744, 23936, 40257, 24320, 40897, 40577, 24128, 23040, 39617, 39809, 23360, 39169, 22976, 22656, 38977, 34817, 18624, 18816, 35137, 19200, 35777, 35457, 19008, 19968, 36545, 36737, 20288, 36097, 19904, 19584, 35905, 17408, 33985, 34177, 17728, 34561, 18368, 18048, 34369, 33281, 17088, 17280, 33601, 16640, 33217, 32897, 16448]
+
+NO_USB_SWITCH = {5, 7, 12, 14, 15, 18}
 
 class RxTcpAutoConnection:
 	__rx = None
@@ -864,6 +867,200 @@ def is_river(product: int):
 def is_river_mini(product: int):
 	return product == 17
 
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#  send.py
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+def _btoi(b: Optional[bool]):
+    if b is None:
+        return 255
+    return 1 if b else 0
+
+
+def build2(dst: int, cmd_set: int, cmd_id: int, data: bytes = b''):
+    b = bytes([170, 2])
+    b += len(data).to_bytes(2, "little")
+    b += calcCrc8(b)
+    b += bytes([13, 0, 0, 0, 0, 0, 0, 32, dst, cmd_set, cmd_id])
+    b += data
+    b += calcCrc16(b)
+    return b
+
+
+def get_product_info(dst: int):
+    return build2(dst, 1, 5)
+
+
+def get_cpu_id():
+    return build2(2, 1, 64)
+
+
+def get_serial_main():
+    return build2(2, 1, 65)
+
+
+def get_pd():
+    return build2(2, 32, 2, b'\0')
+
+
+def reset():
+    return build2(2, 32, 3)
+
+
+def set_standby_timeout(value: int):
+    return build2(2, 32, 33, value.to_bytes(2, "little"))
+
+
+def set_usb(enable: bool):
+    return build2(2, 32, 34, bytes([1 if enable else 0]))
+
+
+def set_light(product: int, value: int):
+    return build2(2, 32, 35, bytes([value]))
+
+
+def set_dc_out(product: int, enable: bool):
+    if is_delta(product):
+        cmd = (5, 32, 81)
+    elif product == 20:
+        cmd = (8, 8, 3)
+    elif product in [5, 7, 12, 18]:
+        cmd = (2, 32, 34)
+    else:
+        cmd = (2, 32, 37)
+    return build2(*cmd, bytes([1 if enable else 0]))
+
+
+def set_beep(enable: bool):
+    return build2(2, 32, 38, bytes([0 if enable else 1]))
+
+
+def set_lcd(product: int, time: int = 0xFFFF, light: int = 255):
+    arg = time.to_bytes(2, "little")
+    if is_delta(product) or is_river_mini(product):
+        arg += bytes([light])
+    return build2(2, 32, 39, arg)
+
+
+def get_lcd():
+    return build2(2, 32, 40)
+
+
+def close(value: int):
+    return build2(2, 32, 41, value.to_bytes(2, "little"))
+
+
+def get_ems_main():
+    return build2(3, 32, 2)
+
+
+def set_level_max(product: int, value: int):
+    dst = 4 if product == 17 else 3
+    return build2(dst, 32, 49, bytes([value]))
+
+
+def set_level_min(value: int):
+    return build2(3, 32, 51, bytes([value]))
+
+
+def set_generate_start(value: int):
+    return build2(3, 32, 52, bytes([value]))
+
+
+def set_generate_stop(value: int):
+    return build2(3, 32, 53, bytes([value]))
+
+
+def get_inverter():
+    return build2(4, 32, 2)
+
+
+def set_ac_in_slow(value: bool):
+    return build2(4, 32, 65, bytes([_btoi(value)]))
+
+
+def set_ac_out(product: int, enable: bool = None, xboost: bool = None, freq: int = 255):
+    if product == 20:
+        cmd = (8, 8, 2)
+        arg = [_btoi(enable)]
+    else:
+        cmd = (4, 32, 66)
+        arg = [_btoi(enable), _btoi(xboost), 255, 255, 255, 255, freq]
+    return build2(*cmd, bytes(arg))
+
+
+def set_dc_in_type(product: int, value: int):
+    if is_delta(product):
+        cmd = (5, 32, 82)
+    else:
+        cmd = (4, 32, 67)
+    return build2(*cmd, bytes([value]))
+
+
+def get_dc_in_type(product: int):
+    if is_delta(product):
+        cmd = (5, 32, 82)
+    else:
+        cmd = (4, 32, 68)
+    return build2(*cmd, bytes([0]))
+
+
+def set_ac_in_limit(watts: int = 0xFFFF, pause: bool = None):
+    arg = bytes([255, 255])
+    arg += watts.to_bytes(2, "little")
+    arg += bytes([_btoi(pause)])
+    return build2(4, 32, 69, arg)
+
+
+def set_dc_in_current(product: int, value: int):
+    dst = 5 if is_delta(product) else 4
+    return build2(dst, 32, 71, value.to_bytes(4, "little"))
+
+
+def get_dc_in_current(product: int):
+    dst = 5 if is_delta(product) else 4
+    return build2(dst, 32, 72)
+
+
+def set_fan_auto(product: int, value: bool):
+    return build2(4, 32, 73, bytes([1 if value else 3]))
+
+
+def get_fan_auto():
+    return build2(4, 32, 74)
+
+
+def get_lab():
+    return build2(4, 32, 84)
+
+
+def set_lab(value: int):
+    return build2(4, 32, 84, bytes([value]))
+
+
+def set_ac_timeout(value: int):
+    return build2(4, 32, 153, value.to_bytes(2, "little"))
+
+
+def get_serial_extra():
+    return build2(6, 1, 65)
+
+
+def get_ems_extra():
+    return build2(6, 32, 2)
+
+
+def set_ambient(mode: int = 255, animate: int = 255, color=(255, 255, 255, 255), brightness=255):
+    arg = [mode, animate, *color, brightness]
+    return build2(6, 32, 97, bytes(arg))
+
+
+def _set_watt(value: int):
+    return build2(8, 8, 7, value.to_bytes(2, "little"))
+    
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+#  Get a JSON array of system information
 async def _get_status(product_name, ip_address, timeout_seconds):
 	try:
 		timeout = datetime.timedelta(seconds=timeout_seconds)
@@ -879,3 +1076,18 @@ async def _get_status(product_name, ip_address, timeout_seconds):
 
 def get_status(product_name, ip_address, timeout_seconds):
 	return asyncio.run(_get_status(product_name, ip_address, timeout_seconds))
+
+#  Send one of the get/set commands from the "send.py" portion of the API
+async def _set_config(product_name, ip_address, timeout_seconds, parameter):
+	try:
+		timeout = datetime.timedelta(seconds=timeout_seconds)
+		client =  EcoFlowClient(product_name, ip_address, timeout)
+		while not client.diagnostics:
+			await asyncio.sleep(0)
+		return client.tcp.write(parameter)
+	finally:
+		if client:
+			await client.close()
+
+def set_config(product_name, ip_address, timeout_seconds, parameter):
+	return asyncio.run(_set_config(product_name, ip_address, timeout_seconds, parameter))
